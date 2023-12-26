@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["decode", "i52e"],
+            "args": ["decode", "l5:helloi52ee"],
             "cwd": "${workspaceFolder}"
         },
         {

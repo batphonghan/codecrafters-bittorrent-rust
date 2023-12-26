@@ -5,28 +5,43 @@ use std::env;
 // use serde_bencode
 
 #[allow(dead_code)]
-fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
+fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     // If encoded_value starts with a digit, it's a number
 
-    let mut it = encoded_value.chars();
-    let first = it.next().unwrap();
-    if first.is_digit(10) {
-        // Example: "5:hello" -> "hello"
-        let colon_index = encoded_value.find(':').unwrap();
-        let number_string = &encoded_value[..colon_index];
-        let number = number_string.parse::<i64>().unwrap();
-        let string = &encoded_value[colon_index + 1..colon_index + 1 + number as usize];
-        return serde_json::Value::String(string.to_string());
-    } else if first == 'i' {
-        let end_index = encoded_value.find('e').unwrap();
+    let (tag, mut rest) = encoded_value.split_at(1);
+    let tag = &tag.chars().next().expect("split at");
+    match tag {
+        'i' => {
+            if let Some((digit, rest)) = rest.split_once('e') {
+                if let Some(len) = digit.parse::<i64>().ok() {
+                    return (len.into(), rest);
+                }
+            }
+        }
+        'l' => {
+            let mut list = Vec::new();
+            if let Some(list_string) = rest.strip_suffix('e') {
+                let (mut v, mut list_string) = decode_bencoded_value(list_string);
 
-        let number_string = &encoded_value[1..end_index];
-        let number = number_string.parse::<i64>().unwrap();
-
-        return serde_json::Value::Number(number.into());
-    } else {
-        panic!("Unhandled encoded value: {}", encoded_value)
+                loop {
+                    list.push(v.clone());
+                    if list_string.is_empty() {
+                        return (serde_json::Value::Array(list), "");
+                    }
+                    (v, list_string) = decode_bencoded_value(list_string);
+                }
+            }
+        }
+        _ => {
+            if let Some((len, rest)) = encoded_value.split_once(':') {
+                if let Some(len) = len.parse::<usize>().ok() {
+                    return (serde_json::Value::String(rest[..len].into()), &rest[len..]);
+                }
+            }
+        }
     }
+
+    panic!("Unhandled encoded value: {}", encoded_value);
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
@@ -41,7 +56,7 @@ fn main() {
         // Uncomment this block to pass the first stage
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.to_string());
+        println!("{}", decoded_value.0.to_string());
     } else {
         println!("unknown command: {}", args[1])
     }
