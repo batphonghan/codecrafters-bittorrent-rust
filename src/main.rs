@@ -18,19 +18,23 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 }
             }
         }
+        //lli4eei5ee
         'l' => {
-            let mut list = Vec::new();
-            if let Some(list_string) = rest.strip_suffix('e') {
-                let (mut v, mut list_string) = decode_bencoded_value(list_string);
-
-                loop {
-                    list.push(v.clone());
-                    if list_string.is_empty() {
-                        return (serde_json::Value::Array(list), "");
-                    }
-                    (v, list_string) = decode_bencoded_value(list_string);
+            let mut values = Vec::new();
+            while !rest.is_empty() {
+                if rest.starts_with('e') {
+                    rest = rest.strip_prefix('e').unwrap_or("");
+                    break;
                 }
+
+                let (v, remainder) = decode_bencoded_value(rest);
+                if !v.is_null() {
+                    values.push(v);
+                }
+
+                rest = remainder
             }
+            return (values.into(), &rest);
         }
         _ => {
             if let Some((len, rest)) = encoded_value.split_once(':') {
@@ -41,7 +45,7 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
         }
     }
 
-    panic!("Unhandled encoded value: {}", encoded_value);
+    return (serde_json::Value::Null, "");
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
@@ -60,4 +64,14 @@ fn main() {
     } else {
         println!("unknown command: {}", args[1])
     }
+}
+
+#[test]
+fn it_works() {
+    let (v, s) = decode_bencoded_value("lli4eei5ee");
+
+    //l < l< i4e e i5 >e >e
+    assert!(s.is_empty(), "s is fully parsed");
+
+    println!("{:?}", v);
 }
