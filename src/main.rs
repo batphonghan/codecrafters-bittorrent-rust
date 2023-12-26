@@ -1,5 +1,8 @@
 use serde_json;
-use std::env;
+use std::{
+    collections::{BTreeMap, HashMap},
+    env,
+};
 
 // Available if you need it!
 // use serde_bencode
@@ -18,13 +21,12 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 }
             }
         }
-        //lli4eei5ee
         'l' => {
             let mut values = Vec::new();
             while !rest.is_empty() {
+                // End of all list element
                 if rest.starts_with('e') {
-                    rest = rest.strip_prefix('e').unwrap_or("");
-                    break;
+                    return (values.into(), &rest[1..]);
                 }
 
                 let (v, remainder) = decode_bencoded_value(rest);
@@ -34,6 +36,27 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
 
                 rest = remainder
             }
+            return (values.into(), &rest);
+        }
+        'd' => {
+            let mut values = serde_json::Map::new();
+
+            while !rest.is_empty() {
+                // End of all dict keys + values
+                if rest.starts_with('e') {
+                    return (values.into(), &rest[1..]);
+                }
+
+                let (key, remainder) = decode_bencoded_value(rest);
+                let (value, remainder) = decode_bencoded_value(remainder);
+                match key {
+                    serde_json::Value::String(s) => values.insert(s, value),
+                    _ => panic!("Unsupport type keys"),
+                };
+
+                rest = remainder;
+            }
+
             return (values.into(), &rest);
         }
         _ => {
@@ -69,6 +92,16 @@ fn main() {
 #[test]
 fn it_works() {
     let (v, s) = decode_bencoded_value("lli4eei5ee");
+
+    //l < l< i4e e i5 >e >e
+    assert!(s.is_empty(), "s is fully parsed");
+
+    println!("{:?}", v);
+}
+
+#[test]
+fn it_works_dict() {
+    let (v, s) = decode_bencoded_value("d3:foo3:bar5:helloi52ee");
 
     //l < l< i4e e i5 >e >e
     assert!(s.is_empty(), "s is fully parsed");
