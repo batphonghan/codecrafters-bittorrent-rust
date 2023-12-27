@@ -1,9 +1,5 @@
-use reqwest::Url;
 use serde_json;
-use std::{
-    collections::{BTreeMap, HashMap},
-    env,
-};
+use std::env;
 
 use hex::ToHex;
 
@@ -19,11 +15,10 @@ struct MetaInfo {
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct Info {
-    length: usize,
+    length: i64,
     name: String,
     #[serde(rename = "piece length")]
     piece_length: usize,
-    // pieces60: Vec<u8>,
     /// Each entry of `pieces` is the SHA1 hash of the piece at the corresponding index.
     pieces: serde_bencode::value::Value,
 }
@@ -101,10 +96,6 @@ fn main() {
     let command = &args[1];
 
     if command == "decode" {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        // println!("Logs from your program will appear here!");
-
-        // Uncomment this block to pass the first stage
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.0.to_string());
@@ -114,13 +105,25 @@ fn main() {
         let meta: MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
         println!("Tracker URL: {}", meta.announce);
-        println!("Length: {}", meta.info.length);
+        println!("Length: {:?}", meta.info.length);
 
-        let info = serde_bencode::to_bytes(&meta.info).expect("encode info to bytes");
+        let info = serde_bencode::to_bytes(&meta.info).expect("encode info");
         let hasher = hashes::sha1::hash(&info);
         let b = hasher.into_bytes();
 
         println!("Info Hash: {}", b.encode_hex::<String>());
+
+        println!("Piece Length: {}", meta.info.piece_length);
+
+        println!("Piece Hashes:");
+        match meta.info.pieces {
+            serde_bencode::value::Value::Bytes(ref buf) => {
+                let c: Vec<_> = buf.chunks(20).collect();
+                c.iter()
+                    .for_each(|v| println!("{}", v.encode_hex::<String>()));
+            }
+            _ => {}
+        };
     } else {
         println!("unknown command: {}", args[1])
     }
@@ -130,7 +133,6 @@ fn main() {
 fn it_works() {
     let (v, s) = decode_bencoded_value("lli4eei5ee");
 
-    //l < l< i4e e i5 >e >e
     assert!(s.is_empty(), "s is fully parsed");
 
     println!("{:?}", v);
