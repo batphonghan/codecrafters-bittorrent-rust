@@ -5,8 +5,11 @@ use std::{
     env,
 };
 
-use serde::{Deserialize, Serialize};
+use hex::ToHex;
 
+use serde::{Deserialize, Serialize};
+//d69f91e6b2ae4c542468d1073a71d4ea13879a7f
+// e876f67a2a8886e8f36b136726c30fa29703022d6e2275e604a0766656736e81ff10b55204ad8d35f00d937a0213df1982bc8d097227ad9e909acc17
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct MetaInfo {
     announce: String,
@@ -21,6 +24,8 @@ struct Info {
     #[serde(rename = "piece length")]
     piece_length: usize,
     // pieces60: Vec<u8>,
+    /// Each entry of `pieces` is the SHA1 hash of the piece at the corresponding index.
+    pieces: serde_bencode::value::Value,
 }
 
 // Available if you need it!
@@ -110,7 +115,12 @@ fn main() {
 
         println!("Tracker URL: {}", meta.announce);
         println!("Length: {}", meta.info.length);
-        // println!("Meta: {:?}", meta);
+
+        let info = serde_bencode::to_bytes(&meta.info).expect("encode info to bytes");
+        let hasher = hashes::sha1::hash(&info);
+        let b = hasher.into_bytes();
+
+        println!("Info Hash: {}", b.encode_hex::<String>());
     } else {
         println!("unknown command: {}", args[1])
     }
