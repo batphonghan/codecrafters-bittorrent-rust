@@ -1,8 +1,27 @@
+use reqwest::Url;
 use serde_json;
 use std::{
     collections::{BTreeMap, HashMap},
     env,
 };
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+struct MetaInfo {
+    announce: String,
+    // #[serde(flatten)]
+    info: Info,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+struct Info {
+    length: usize,
+    name: String,
+    #[serde(rename = "piece length")]
+    piece_length: usize,
+    // pieces60: Vec<u8>,
+}
 
 // Available if you need it!
 // use serde_bencode
@@ -84,6 +103,14 @@ fn main() {
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.0.to_string());
+    } else if command == "info" {
+        let data = std::fs::read(&args[2]).expect("torrent file exist");
+
+        let meta: MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+
+        println!("Tracker URL: {}", meta.announce);
+        println!("Length: {}", meta.info.length);
+        // println!("Meta: {:?}", meta);
     } else {
         println!("unknown command: {}", args[1])
     }
