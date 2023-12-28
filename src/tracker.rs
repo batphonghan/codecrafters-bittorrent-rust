@@ -63,8 +63,8 @@ impl From<MetaInfo> for TrackerRequest {
     }
 }
 
-impl<'a> TrackerRequest {
-    pub fn query(&'a self) -> String {
+impl TrackerRequest {
+    pub fn query(&self) -> String {
         let url_encoded_info_hash = urlencoding::encode_binary(&self.info_hash[..]);
         let url_encoded_peer_id = urlencoding::encode(&self.peer_id);
 

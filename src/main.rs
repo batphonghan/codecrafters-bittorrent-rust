@@ -1,9 +1,14 @@
-use anyhow::Ok;
+use hex::encode;
+use peer::HandshakeMessage;
 use serde_json;
 use std::env;
+use tokio::{
+    io::{self, AsyncWriteExt},
+    net::{tcp, TcpStream},
+};
 use tracker::{TrackerRequest, TrackerResponse};
-
 mod meta;
+mod peer;
 mod tracker;
 
 #[allow(dead_code)]
@@ -111,6 +116,47 @@ async fn main() -> anyhow::Result<()> {
             resp.peers()
                 .iter()
                 .for_each(|v| println!("{}:{}", v.0, v.1));
+        }
+        "handshake" => {
+            let data = std::fs::read(&args[2]).expect("torrent file exist");
+
+            let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+
+            let host = &args[3];
+
+            // Connect to a peer
+            let mut stream = TcpStream::connect(host).await?;
+
+            let handshake = HandshakeMessage::from(meta);
+            // Write some data.
+            let x: Vec<u8> = handshake.into();
+            stream.write_all(&x[..]).await?;
+
+            let mut msg = vec![0; 1024];
+
+            loop {
+                // Wait for the socket to be readable
+                stream.readable().await?;
+
+                // Try to read data, this may still fail with `WouldBlock`
+                // if the readiness event is a false positive.
+                match stream.try_read(&mut msg) {
+                    Ok(n) => {
+                        msg.truncate(n);
+                        break;
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            // last 20 bytes
+            let peer_id = &msg[48..];
+            println!("Peer ID: {}", encode(peer_id));
         }
         _ => {
             println!("unknown command: {}", args[1])
