@@ -1,5 +1,8 @@
+use anyhow::Ok;
 use serde_json;
-use std::env;
+use std::{collections::HashMap, env};
+use tracker::{TrackerRequest, TrackerResponse};
+use urlencoding::encode;
 
 mod meta;
 mod tracker;
@@ -67,7 +70,8 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
 
@@ -89,7 +93,25 @@ fn main() {
 
         println!("Piece Hashes:");
         meta.pieces_hash().iter().for_each(|v| println!("{v}"));
+    } else if command == "peers" {
+        let data = std::fs::read(&args[2]).expect("torrent file exist");
+
+        let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+
+        let mut url = reqwest::Url::parse(&meta.announce).expect("announce URL ");
+
+        let encode_query = TrackerRequest::from(meta).query();
+        url.set_query(Some(&encode_query));
+        let b = reqwest::get(url).await?.bytes().await?;
+
+        let resp: TrackerResponse = serde_bencode::from_bytes(&b).expect("Tracker response");
+
+        resp.peers()
+            .iter()
+            .for_each(|v| println!("{}:{}", v.0, v.1));
     } else {
         println!("unknown command: {}", args[1])
     }
+
+    Ok(())
 }

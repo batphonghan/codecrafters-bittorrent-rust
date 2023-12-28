@@ -19,11 +19,14 @@ pub struct Info {
 
 impl MetaInfo {
     pub fn info_hash(&self) -> String {
+        let b = self.info_hash_byte();
+        b.encode_hex()
+    }
+
+    pub fn info_hash_byte(&self) -> [u8; 20] {
         let info = serde_bencode::to_bytes(&self.info).expect("encode info");
         let hasher = hashes::sha1::hash(&info);
-        let b = hasher.into_bytes();
-
-        b.encode_hex()
+        hasher.into_bytes()
     }
 
     pub fn pieces_hash(&self) -> Vec<String> {
