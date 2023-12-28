@@ -129,33 +129,20 @@ async fn main() -> anyhow::Result<()> {
 
             let handshake = HandshakeMessage::from(meta);
             // Write some data.
-            let x: Vec<u8> = handshake.into();
-            stream.write_all(&x[..]).await?;
+            let mut handshake_bytes: Vec<u8> = handshake.into_bytes();
+            stream.write_all(&handshake_bytes[..]).await?;
 
-            let mut msg = vec![0; 1024];
+            // Wait for the socket to be readable
+            stream.readable().await?;
 
-            loop {
-                // Wait for the socket to be readable
-                stream.readable().await?;
-
-                // Try to read data, this may still fail with `WouldBlock`
-                // if the readiness event is a false positive.
-                match stream.try_read(&mut msg) {
-                    Ok(n) => {
-                        msg.truncate(n);
-                        break;
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
-            }
+            // Try to read data, this may still fail with `WouldBlock`
+            // if the readiness event is a false positive.
+            stream
+                .try_read(&mut handshake_bytes)
+                .expect("Read handshake");
 
             // last 20 bytes
-            let peer_id = &msg[48..];
+            let peer_id = &handshake_bytes[48..];
             println!("Peer ID: {}", encode(peer_id));
         }
         _ => {
