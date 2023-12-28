@@ -1,8 +1,7 @@
 use anyhow::Ok;
 use serde_json;
-use std::{collections::HashMap, env};
+use std::env;
 use tracker::{TrackerRequest, TrackerResponse};
-use urlencoding::encode;
 
 mod meta;
 mod tracker;
@@ -75,42 +74,47 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
 
-    if command == "decode" {
-        let encoded_value = &args[2];
-        let decoded_value = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.0.to_string());
-    } else if command == "info" {
-        let data = std::fs::read(&args[2]).expect("torrent file exist");
+    match command.as_str() {
+        "decode" => {
+            let encoded_value = &args[2];
+            let decoded_value = decode_bencoded_value(encoded_value);
+            println!("{}", decoded_value.0.to_string());
+        }
+        "info" => {
+            let data = std::fs::read(&args[2]).expect("torrent file exist");
 
-        let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+            let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
-        println!("Tracker URL: {}", meta.announce);
-        println!("Length: {:?}", meta.info.length);
+            println!("Tracker URL: {}", meta.announce);
+            println!("Length: {:?}", meta.info.length);
 
-        println!("Info Hash: {}", meta.info_hash());
+            println!("Info Hash: {}", meta.info_hash());
 
-        println!("Piece Length: {}", meta.info.piece_length);
+            println!("Piece Length: {}", meta.info.piece_length);
 
-        println!("Piece Hashes:");
-        meta.pieces_hash().iter().for_each(|v| println!("{v}"));
-    } else if command == "peers" {
-        let data = std::fs::read(&args[2]).expect("torrent file exist");
+            println!("Piece Hashes:");
+            meta.pieces_hash().iter().for_each(|v| println!("{v}"));
+        }
+        "peers" => {
+            let data = std::fs::read(&args[2]).expect("torrent file exist");
 
-        let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+            let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
-        let mut url = reqwest::Url::parse(&meta.announce).expect("announce URL ");
+            let mut url = reqwest::Url::parse(&meta.announce).expect("announce URL ");
 
-        let encode_query = TrackerRequest::from(meta).query();
-        url.set_query(Some(&encode_query));
-        let b = reqwest::get(url).await?.bytes().await?;
+            let encode_query = TrackerRequest::from(meta).query();
+            url.set_query(Some(&encode_query));
+            let b = reqwest::get(url).await?.bytes().await?;
 
-        let resp: TrackerResponse = serde_bencode::from_bytes(&b).expect("Tracker response");
+            let resp: TrackerResponse = serde_bencode::from_bytes(&b).expect("Tracker response");
 
-        resp.peers()
-            .iter()
-            .for_each(|v| println!("{}:{}", v.0, v.1));
-    } else {
-        println!("unknown command: {}", args[1])
+            resp.peers()
+                .iter()
+                .for_each(|v| println!("{}:{}", v.0, v.1));
+        }
+        _ => {
+            println!("unknown command: {}", args[1])
+        }
     }
 
     Ok(())

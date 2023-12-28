@@ -102,10 +102,10 @@ impl TrackerResponse {
                 .map(|v| {
                     let (ip_b, port) = v.split_at(4);
 
-                    let first_4_bytes: [u8; 4] = ip_b.try_into().expect("4 byte IP");
+                    let first_4_bytes: [u8; 4] = ip_b.try_into().expect("4 bytes IPv4");
                     let ip = IpAddr::from(first_4_bytes);
 
-                    let last_2_bytes: [u8; 2] = port.try_into().expect("2 byte port");
+                    let last_2_bytes: [u8; 2] = port.try_into().expect("2 bytes port");
                     let port = u16::from_be_bytes(last_2_bytes);
 
                     (ip, port)
