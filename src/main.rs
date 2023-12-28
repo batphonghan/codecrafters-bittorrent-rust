@@ -1,35 +1,11 @@
 use serde_json;
 use std::env;
 
-use hex::ToHex;
-
-use serde::{Deserialize, Serialize};
-//d69f91e6b2ae4c542468d1073a71d4ea13879a7f
-// e876f67a2a8886e8f36b136726c30fa29703022d6e2275e604a0766656736e81ff10b55204ad8d35f00d937a0213df1982bc8d097227ad9e909acc17
-#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-struct MetaInfo {
-    announce: String,
-    // #[serde(flatten)]
-    info: Info,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-struct Info {
-    length: i64,
-    name: String,
-    #[serde(rename = "piece length")]
-    piece_length: usize,
-    /// Each entry of `pieces` is the SHA1 hash of the piece at the corresponding index.
-    pieces: serde_bencode::value::Value,
-}
-
-// Available if you need it!
-// use serde_bencode
+mod meta;
+mod tracker;
 
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
-    // If encoded_value starts with a digit, it's a number
-
     let (tag, mut rest) = encoded_value.split_at(1);
     let tag = &tag.chars().next().expect("split at");
     match tag {
@@ -102,48 +78,18 @@ fn main() {
     } else if command == "info" {
         let data = std::fs::read(&args[2]).expect("torrent file exist");
 
-        let meta: MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+        let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
         println!("Tracker URL: {}", meta.announce);
         println!("Length: {:?}", meta.info.length);
 
-        let info = serde_bencode::to_bytes(&meta.info).expect("encode info");
-        let hasher = hashes::sha1::hash(&info);
-        let b = hasher.into_bytes();
-
-        println!("Info Hash: {}", b.encode_hex::<String>());
+        println!("Info Hash: {}", meta.info_hash());
 
         println!("Piece Length: {}", meta.info.piece_length);
 
         println!("Piece Hashes:");
-        match meta.info.pieces {
-            serde_bencode::value::Value::Bytes(ref buf) => {
-                let c: Vec<_> = buf.chunks(20).collect();
-                c.iter()
-                    .for_each(|v| println!("{}", v.encode_hex::<String>()));
-            }
-            _ => {}
-        };
+        meta.pieces_hash().iter().for_each(|v| println!("{v}"));
     } else {
         println!("unknown command: {}", args[1])
     }
-}
-
-#[test]
-fn it_works() {
-    let (v, s) = decode_bencoded_value("lli4eei5ee");
-
-    assert!(s.is_empty(), "s is fully parsed");
-
-    println!("{:?}", v);
-}
-
-#[test]
-fn it_works_dict() {
-    let (v, s) = decode_bencoded_value("d3:foo3:bar5:helloi52ee");
-
-    //l < l< i4e e i5 >e >e
-    assert!(s.is_empty(), "s is fully parsed");
-
-    println!("{:?}", v);
 }
