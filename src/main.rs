@@ -1,11 +1,15 @@
 use anyhow::Ok;
-use hex::encode;
-use peer::HandshakeMessage;
-use serde_json;
-use std::{env, path::PathBuf};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
-
 use clap::{Parser, Subcommand};
+use hex::encode;
+use hex::ToHex;
+use peer::{HandshakeMessage, PeerMessage};
+use serde_json;
+use sha1::{Digest, Sha1};
+use std::time::Duration;
+use std::{env, path::PathBuf};
+use tokio::fs::OpenOptions;
+use tokio::time::sleep;
+use tokio::{fs::File, io::AsyncWriteExt, net::TcpStream};
 
 use tracker::{TrackerRequest, TrackerResponse};
 mod meta;
@@ -173,7 +177,164 @@ async fn main() -> anyhow::Result<()> {
             path,
             piece,
         } => {
-            println!("{:?} {:?} {:?}", output, path, piece);
+            let data = std::fs::read(path).expect("torrent file exist");
+
+            let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+
+            let piece_length = meta.info.piece_length;
+
+            let pieces_hash = meta.pieces_hash();
+            let piece_hash = pieces_hash.get(*piece).expect("piece at indexs");
+
+            let trackers = get_tracker(path).await?;
+            let peers = trackers.peers();
+            let tracker = &peers.first().expect("at least one peer");
+
+            let peer = format!("{}:{}", tracker.0, tracker.1);
+            // Connect to a peer
+            let mut stream = TcpStream::connect(peer).await?;
+
+            let handshake = HandshakeMessage::from(meta);
+            // Write some data.
+            let mut handshake_bytes: Vec<u8> = handshake.into_bytes();
+            stream.write_all(&handshake_bytes[..]).await?;
+
+            // Wait for the socket to be readable
+            stream.readable().await?;
+
+            // Try to read data, this may still fail with `WouldBlock`
+            // if the readiness event is a false positive.
+            stream
+                .try_read(&mut handshake_bytes)
+                .expect("Read handshake");
+
+            // last 20 bytes
+            let peer_id = &handshake_bytes[48..];
+
+            let mut v = [0; 5];
+
+            // wait for bitfield
+            loop {
+                stream.readable().await?;
+                let _ = stream.try_read(&mut v);
+                match peer::PeerMessage::form_bytes(&v, vec![]).msg_type {
+                    peer::PeerMessageType::Bitfield { .. } => break,
+                    _ => {}
+                };
+            }
+
+            let interest_byte =
+                peer::PeerMessage::new(peer::PeerMessageType::Interest, Vec::new()).bytes();
+            stream.write_all(&interest_byte[..]).await?;
+
+            eprintln!("wait for unchoke");
+
+            loop {
+                stream.readable().await?;
+                let _ = stream.try_read(&mut v);
+                let msg_type = peer::PeerMessage::form_bytes(&v, vec![]).msg_type;
+                match msg_type {
+                    peer::PeerMessageType::Unchoke { .. } => break,
+                    _ => {
+                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        sleep(Duration::from_secs(2)).await;
+                    }
+                };
+            }
+            eprintln!("received for unchoke");
+
+            const BLOCK_SIZE: usize = 16 * 1024;
+
+            const piece_size: usize = BLOCK_SIZE + 64 + 5;
+
+            let mut f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                // .append(true)
+                .open(output)
+                .await?;
+
+            let mut curr_index = 0;
+            let mut all_blocks = Vec::new();
+
+            while curr_index < piece_length {
+                let mut piece_data = [0; piece_size];
+
+                let mut length = BLOCK_SIZE;
+                if curr_index + BLOCK_SIZE > piece_length {
+                    length = piece_length - curr_index;
+                }
+
+                let mut peer_request =
+                    crate::peer::Request::new(*piece as u32, curr_index as u32, length as u32);
+
+                let request_payload = peer_request.as_bytes_mut();
+
+                let request_msg = peer::PeerMessage::new(
+                    peer::PeerMessageType::Request,
+                    request_payload.to_vec(),
+                )
+                .bytes();
+                stream.write_all(&request_msg[..]).await?;
+
+                eprintln!(
+                    "Request curr_index: {curr_index} legngth: {length} total: {piece_length}"
+                );
+
+                loop {
+                    stream.readable().await?;
+                    let _ = stream.try_read(&mut piece_data);
+
+                    let (piece_msg_data, piece_payload) = piece_data.split_at(5);
+                    let msg_type = peer::PeerMessage::form_bytes(
+                        &piece_msg_data.try_into().expect("5 byes"),
+                        vec![],
+                    )
+                    .msg_type;
+                    match msg_type {
+                        peer::PeerMessageType::Piece { .. } => {
+                            eprintln!("received for Piece");
+                            let (index_byte, rest) = piece_payload.split_at(4);
+
+                            eprintln!(
+                                "Index {}",
+                                u32::from_be_bytes(
+                                    index_byte.try_into().expect("4 bytes u32 index")
+                                )
+                            );
+
+                            let (begin, block) = rest.split_at(4);
+
+                            eprintln!(
+                                "begin {}",
+                                u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
+                            );
+
+                            // let block = &block[..length];
+
+                            all_blocks.extend(block);
+                            f.write_all(block).await?;
+                            curr_index += length;
+                            break;
+                        }
+                        _ => {
+                            // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                            // sleep(Duration::from_secs(2)).await;
+                        }
+                    };
+                }
+            }
+            let mut hasher = Sha1::new();
+            hasher.update(&all_blocks);
+            let hash: [u8; 20] = hasher.finalize().try_into()?;
+
+            assert_eq!(hash.encode_hex::<String>(), *piece_hash);
+
+            println!(
+                "Piece {piece} downloaded to {}.",
+                output.as_path().display()
+            );
         }
         _ => {
             println!("unknown command: {}", args[1])
@@ -198,3 +359,7 @@ async fn get_tracker(path: &PathBuf) -> anyhow::Result<TrackerResponse> {
 
     Ok(resp)
 }
+
+// left: `"bdd62e4f018128f2475f5286156ac3fb02b5f42e"`,
+// right: `"e876f67a2a8886e8f36b136726c30fa29703022d"`', src/main.rs:310:13
+// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
