@@ -182,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
             let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
             let piece_length = meta.info.piece_length;
+            // let file_length = meta.info.length;
 
             let pieces_hash = meta.pieces_hash();
             let piece_hash = pieces_hash.get(*piece).expect("piece at indexs");
@@ -213,18 +214,26 @@ async fn main() -> anyhow::Result<()> {
 
             let mut v = [0; 5];
 
-            // wait for bitfield
+            eprintln!("wait for bitfield peer {:?}", peer_id);
             loop {
                 stream.readable().await?;
                 let _ = stream.try_read(&mut v);
-                match peer::PeerMessage::form_bytes(&v, vec![]).msg_type {
+                let msg_type =
+                    peer::PeerMessage::form_bytes(&v[..5].try_into().expect("e")).msg_type;
+                match msg_type {
                     peer::PeerMessageType::Bitfield { .. } => break,
-                    _ => {}
+                    _ => {
+                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        sleep(Duration::from_secs(2)).await;
+                    }
                 };
             }
 
+            eprintln!("received bitfield");
+
+            let mut v = [0; 5];
             let interest_byte =
-                peer::PeerMessage::new(peer::PeerMessageType::Interest, Vec::new()).bytes();
+                peer::PeerMessage::new_message(peer::PeerMessageType::Interested).as_bytes();
             stream.write_all(&interest_byte[..]).await?;
 
             eprintln!("wait for unchoke");
@@ -232,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 stream.readable().await?;
                 let _ = stream.try_read(&mut v);
-                let msg_type = peer::PeerMessage::form_bytes(&v, vec![]).msg_type;
+                let msg_type = peer::PeerMessage::form_bytes(&v).msg_type;
                 match msg_type {
                     peer::PeerMessageType::Unchoke { .. } => break,
                     _ => {
@@ -255,31 +264,27 @@ async fn main() -> anyhow::Result<()> {
                 .open(output)
                 .await?;
 
-            let mut curr_index = 0;
+            let mut curr_offset = 0;
             let mut all_blocks = Vec::new();
 
-            while curr_index < piece_length {
+            while curr_offset < piece_length {
                 let mut piece_data = [0; piece_size];
 
-                let mut length = BLOCK_SIZE;
-                if curr_index + BLOCK_SIZE > piece_length {
-                    length = piece_length - curr_index;
+                let mut curr_block_len = BLOCK_SIZE;
+                if curr_offset + BLOCK_SIZE > piece_length {
+                    curr_block_len = piece_length - curr_offset;
                 }
 
-                let mut peer_request =
-                    crate::peer::Request::new(*piece as u32, curr_index as u32, length as u32);
-
-                let request_payload = peer_request.as_bytes_mut();
-
-                let request_msg = peer::PeerMessage::new(
-                    peer::PeerMessageType::Request,
-                    request_payload.to_vec(),
+                let request_msg = peer::PeerMessage::new_request(
+                    *piece as u32,
+                    curr_offset as u32,
+                    curr_block_len as u32,
                 )
-                .bytes();
+                .as_bytes();
                 stream.write_all(&request_msg[..]).await?;
 
                 eprintln!(
-                    "Request curr_index: {curr_index} legngth: {length} total: {piece_length}"
+                    "Request curr_index: {curr_offset} legngth: {curr_block_len} total: {piece_length}"
                 );
 
                 loop {
@@ -287,15 +292,13 @@ async fn main() -> anyhow::Result<()> {
                     let _ = stream.try_read(&mut piece_data);
 
                     let (piece_msg_data, piece_payload) = piece_data.split_at(5);
-                    let msg_type = peer::PeerMessage::form_bytes(
-                        &piece_msg_data.try_into().expect("5 byes"),
-                        vec![],
-                    )
-                    .msg_type;
+                    let msg_type =
+                        peer::PeerMessage::form_bytes(&piece_msg_data.try_into().expect("5 byes"))
+                            .msg_type;
                     match msg_type {
                         peer::PeerMessageType::Piece { .. } => {
                             eprintln!("received for Piece");
-                            let (index_byte, rest) = piece_payload.split_at(4);
+                            let (index_byte, piece_payload) = piece_payload.split_at(4);
 
                             eprintln!(
                                 "Index {}",
@@ -304,26 +307,27 @@ async fn main() -> anyhow::Result<()> {
                                 )
                             );
 
-                            let (begin, block) = rest.split_at(4);
+                            let (begin, piece_payload) = piece_payload.split_at(4);
 
                             eprintln!(
                                 "begin {}",
                                 u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
                             );
 
-                            // let block = &block[..length];
+                            let piece_payload = &piece_payload[..curr_block_len];
 
-                            all_blocks.extend(block);
-                            f.write_all(block).await?;
-                            curr_index += length;
+                            all_blocks.extend(piece_payload);
+                            f.write_all(piece_payload).await?;
+                            curr_offset += curr_block_len;
                             break;
                         }
                         _ => {
-                            // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                            // sleep(Duration::from_secs(2)).await;
+                            eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                            sleep(Duration::from_secs(2)).await;
                         }
                     };
                 }
+                // break;
             }
             let mut hasher = Sha1::new();
             hasher.update(&all_blocks);
