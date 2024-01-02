@@ -8,6 +8,7 @@ use sha1::{Digest, Sha1};
 use std::time::Duration;
 use std::{env, path::PathBuf};
 use tokio::fs::OpenOptions;
+use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 use tokio::{fs::File, io::AsyncWriteExt, net::TcpStream};
 
@@ -178,11 +179,10 @@ async fn main() -> anyhow::Result<()> {
             piece,
         } => {
             let data = std::fs::read(path).expect("torrent file exist");
-
             let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
             let piece_length = meta.info.piece_length;
-            // let file_length = meta.info.length;
+            let file_length = meta.info.length;
 
             let pieces_hash = meta.pieces_hash();
             let piece_hash = pieces_hash.get(*piece).expect("piece at indexs");
@@ -210,11 +210,11 @@ async fn main() -> anyhow::Result<()> {
                 .expect("Read handshake");
 
             // last 20 bytes
-            let peer_id = &handshake_bytes[48..];
+            // let peer_id = &handshake_bytes[48..];
 
             let mut v = [0; 5];
 
-            eprintln!("wait for bitfield peer {:?}", peer_id);
+            // eprintln!("wait for bitfield peer {:?}", peer_id);
             loop {
                 stream.readable().await?;
                 let _ = stream.try_read(&mut v);
@@ -223,8 +223,8 @@ async fn main() -> anyhow::Result<()> {
                 match msg_type {
                     peer::PeerMessageType::Bitfield { .. } => break,
                     _ => {
-                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                        sleep(Duration::from_secs(2)).await;
+                        // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        // sleep(Duration::from_secs(2)).await;
                     }
                 };
             }
@@ -246,30 +246,28 @@ async fn main() -> anyhow::Result<()> {
                     peer::PeerMessageType::Unchoke { .. } => break,
                     _ => {
                         eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                        sleep(Duration::from_secs(2)).await;
+                        // sleep(Duration::from_secs(2)).await;
                     }
                 };
             }
             eprintln!("received for unchoke");
 
-            const BLOCK_SIZE: usize = 16 * 1024;
+            const BLOCK_SIZE: usize = 12 * 1024;
 
-            const piece_size: usize = BLOCK_SIZE + 64 + 5;
+            // const piece_size: usize = BLOCK_SIZE + 64 + 5;
 
             let mut f = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
-                // .append(true)
+                .append(true)
                 .open(output)
                 .await?;
 
             let mut curr_offset = 0;
-            let mut all_blocks = Vec::new();
+            let mut all_blocks: Vec<u8> = Vec::with_capacity(piece_length);
 
             while curr_offset < piece_length {
-                let mut piece_data = [0; piece_size];
-
                 let mut curr_block_len = BLOCK_SIZE;
                 if curr_offset + BLOCK_SIZE > piece_length {
                     curr_block_len = piece_length - curr_offset;
@@ -288,15 +286,29 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 loop {
-                    stream.readable().await?;
-                    let _ = stream.try_read(&mut piece_data);
+                    let mut piece_msg_data = [0; 5];
 
-                    let (piece_msg_data, piece_payload) = piece_data.split_at(5);
+                    stream.readable().await?;
+                    let _ = stream.try_read(&mut piece_msg_data);
+
+                    // let (piece_msg_data, piece_payload) = piece_data.split_at(5);
+
                     let msg_type =
                         peer::PeerMessage::form_bytes(&piece_msg_data.try_into().expect("5 byes"))
                             .msg_type;
+
                     match msg_type {
                         peer::PeerMessageType::Piece { .. } => {
+                            let length = u32::from_be_bytes(
+                                piece_msg_data[..4].try_into().expect("4 bytes"),
+                            );
+
+                            // Read the payload
+                            let mut piece_payload: Vec<u8> = vec![0; length as usize - 1];
+
+                            stream.readable().await?;
+                            let _ = stream.read_exact(&mut piece_payload).await;
+
                             eprintln!("received for Piece");
                             let (index_byte, piece_payload) = piece_payload.split_at(4);
 
@@ -314,16 +326,16 @@ async fn main() -> anyhow::Result<()> {
                                 u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
                             );
 
-                            let piece_payload = &piece_payload[..curr_block_len];
+                            // let piece_payload = &piece_payload[..curr_block_len];
 
                             all_blocks.extend(piece_payload);
                             f.write_all(piece_payload).await?;
-                            curr_offset += curr_block_len;
+                            curr_offset += piece_payload.len();
                             break;
                         }
                         _ => {
-                            eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                            sleep(Duration::from_secs(2)).await;
+                            // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                            // sleep(Duration::from_secs(2)).await;
                         }
                     };
                 }
@@ -335,10 +347,13 @@ async fn main() -> anyhow::Result<()> {
 
             assert_eq!(hash.encode_hex::<String>(), *piece_hash);
 
+            assert_eq!(all_blocks.len(), piece_length);
             println!(
                 "Piece {piece} downloaded to {}.",
                 output.as_path().display()
             );
+
+            let _ = f.flush();
         }
         _ => {
             println!("unknown command: {}", args[1])
