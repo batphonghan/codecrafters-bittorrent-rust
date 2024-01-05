@@ -189,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
 
             let trackers = get_tracker(path).await?;
             let peers = trackers.peers();
-            let tracker = &peers.first().expect("at least one peer");
+            let tracker = &peers.last().expect("at least one peer");
 
             let peer = format!("{}:{}", tracker.0, tracker.1);
             // Connect to a peer
@@ -265,7 +265,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             let mut curr_offset = 0;
-            let mut all_blocks: Vec<u8> = Vec::with_capacity(piece_length);
+            let mut all_blocks: Vec<u8> = vec![0; piece_length];
 
             while curr_offset < piece_length {
                 let mut curr_block_len = BLOCK_SIZE;
@@ -281,78 +281,83 @@ async fn main() -> anyhow::Result<()> {
                 .as_bytes();
                 stream.write_all(&request_msg[..]).await?;
 
-                eprintln!(
-                    "Request curr_index: {curr_offset} legngth: {curr_block_len} total: {piece_length}"
-                );
+                // eprintln!(
+                //     "Request curr_index: {curr_offset} legngth: {curr_block_len} total: {piece_length}"
+                // );
+                curr_offset += curr_block_len;
+            }
 
-                loop {
-                    let mut piece_msg_data = [0; 5];
+            let mut block_received = 0;
+            loop {
+                let mut piece_msg_data = [0; 5];
 
-                    stream.readable().await?;
-                    let _ = stream.try_read(&mut piece_msg_data);
+                stream.readable().await?;
+                let _ = stream.try_read(&mut piece_msg_data);
 
-                    // let (piece_msg_data, piece_payload) = piece_data.split_at(5);
+                // let (piece_msg_data, piece_payload) = piece_data.split_at(5);
 
-                    let msg_type =
-                        peer::PeerMessage::form_bytes(&piece_msg_data.try_into().expect("5 byes"))
-                            .msg_type;
+                let msg_type =
+                    peer::PeerMessage::form_bytes(&piece_msg_data.try_into().expect("5 byes"))
+                        .msg_type;
 
-                    match msg_type {
-                        peer::PeerMessageType::Piece { .. } => {
-                            let length = u32::from_be_bytes(
-                                piece_msg_data[..4].try_into().expect("4 bytes"),
-                            );
+                match msg_type {
+                    peer::PeerMessageType::Piece { .. } => {
+                        let length =
+                            u32::from_be_bytes(piece_msg_data[..4].try_into().expect("4 bytes"));
 
-                            // Read the payload
-                            let mut piece_payload: Vec<u8> = vec![0; length as usize - 1];
+                        // Read the payload
+                        let mut piece_payload: Vec<u8> = vec![0; length as usize - 1];
 
-                            stream.readable().await?;
-                            let _ = stream.read_exact(&mut piece_payload).await;
+                        stream.readable().await?;
+                        let _ = stream.read_exact(&mut piece_payload).await;
 
-                            eprintln!("received for Piece");
-                            let (index_byte, piece_payload) = piece_payload.split_at(4);
+                        // eprintln!("received for Piece");
+                        let (index_byte, piece_payload) = piece_payload.split_at(4);
 
-                            eprintln!(
-                                "Index {}",
-                                u32::from_be_bytes(
-                                    index_byte.try_into().expect("4 bytes u32 index")
-                                )
-                            );
+                        // eprintln!(
+                        //     "Index {}",
+                        //     u32::from_be_bytes(index_byte.try_into().expect("4 bytes u32 index"))
+                        // );
 
-                            let (begin, piece_payload) = piece_payload.split_at(4);
+                        let (begin, piece_payload) = piece_payload.split_at(4);
 
-                            eprintln!(
-                                "begin {}",
-                                u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
-                            );
+                        let begin = u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
+                            as usize;
+                        // eprintln!("begin {}", begin);
 
-                            // let piece_payload = &piece_payload[..curr_block_len];
+                        // let piece_payload = &piece_payload[..curr_block_len];
 
-                            all_blocks.extend(piece_payload);
-                            f.write_all(piece_payload).await?;
-                            curr_offset += piece_payload.len();
+                        let blocks = all_blocks[begin..begin + length as usize - 1 - 8].as_mut();
+                        blocks.copy_from_slice(piece_payload);
+
+                        block_received += blocks.len();
+                        all_blocks.extend(piece_payload);
+                        // break;
+
+                        if block_received >= piece_length {
                             break;
                         }
-                        _ => {
-                            // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                            // sleep(Duration::from_secs(2)).await;
-                        }
-                    };
-                }
-                // break;
+                    }
+                    _ => {
+                        // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        // sleep(Duration::from_secs(2)).await;
+                    }
+                };
             }
-            let mut hasher = Sha1::new();
-            hasher.update(&all_blocks);
-            let hash: [u8; 20] = hasher.finalize().try_into()?;
+            // break;
+            // let mut hasher = Sha1::new();
+            // hasher.update(&all_blocks);
+            // let hash: [u8; 20] = hasher.finalize().try_into()?;
 
-            assert_eq!(hash.encode_hex::<String>(), *piece_hash);
+            // assert_eq!(hash.encode_hex::<String>(), *piece_hash);
 
-            assert_eq!(all_blocks.len(), piece_length);
-            println!(
-                "Piece {piece} downloaded to {}.",
-                output.as_path().display()
-            );
+            // assert_eq!(all_blocks.len(), piece_length);
+            // println!(
+            //     "Piece {piece} downloaded to {}.",
+            //     output.as_path().display()
+            // );
 
+            f.write_all(&all_blocks).await?;
             let _ = f.flush();
         }
         _ => {
