@@ -210,11 +210,11 @@ async fn main() -> anyhow::Result<()> {
                 .expect("Read handshake");
 
             // last 20 bytes
-            // let peer_id = &handshake_bytes[48..];
+            let peer_id = &handshake_bytes[48..];
 
             let mut v = [0; 5];
 
-            // eprintln!("wait for bitfield peer {:?}", peer_id);
+            eprintln!("wait for bitfield peer {:?}", peer_id);
             loop {
                 stream.readable().await?;
                 let _ = stream.try_read(&mut v);
@@ -223,8 +223,8 @@ async fn main() -> anyhow::Result<()> {
                 match msg_type {
                     peer::PeerMessageType::Bitfield { .. } => break,
                     _ => {
-                        // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                        // sleep(Duration::from_secs(2)).await;
+                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        sleep(Duration::from_secs(2)).await;
                     }
                 };
             }
@@ -252,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
             }
             eprintln!("received for unchoke");
 
-            const BLOCK_SIZE: usize = 12 * 1024;
+            const BLOCK_SIZE: usize = 16381; // 2 ^ 14
 
             // const piece_size: usize = BLOCK_SIZE + 64 + 5;
 
@@ -267,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
             let mut curr_offset = 0;
             let mut all_blocks: Vec<u8> = vec![0; piece_length];
 
+            let mut index = 0;
             while curr_offset < piece_length {
                 let mut curr_block_len = BLOCK_SIZE;
                 if curr_offset + BLOCK_SIZE > piece_length {
@@ -281,9 +282,10 @@ async fn main() -> anyhow::Result<()> {
                 .as_bytes();
                 stream.write_all(&request_msg[..]).await?;
 
-                // eprintln!(
-                //     "Request curr_index: {curr_offset} legngth: {curr_block_len} total: {piece_length}"
-                // );
+                eprintln!(
+                    "{index} Request piece at offset: {curr_offset} with length: {curr_block_len}. Total piece_length: {piece_length}"
+                );
+                index += 1;
                 curr_offset += curr_block_len;
             }
 
@@ -292,7 +294,11 @@ async fn main() -> anyhow::Result<()> {
                 let mut piece_msg_data = [0; 5];
 
                 stream.readable().await?;
-                let _ = stream.try_read(&mut piece_msg_data);
+                let read_size = stream.read_exact(&mut piece_msg_data).await?;
+
+                if read_size == 0 {
+                    panic!("Closed");
+                }
 
                 // let (piece_msg_data, piece_payload) = piece_data.split_at(5);
 
@@ -331,7 +337,6 @@ async fn main() -> anyhow::Result<()> {
                         blocks.copy_from_slice(piece_payload);
 
                         block_received += blocks.len();
-                        all_blocks.extend(piece_payload);
                         // break;
 
                         if block_received >= piece_length {
@@ -339,23 +344,23 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     _ => {
-                        // eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                        // sleep(Duration::from_secs(2)).await;
+                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
+                        sleep(Duration::from_secs(2)).await;
                     }
                 };
             }
             // break;
-            // let mut hasher = Sha1::new();
-            // hasher.update(&all_blocks);
-            // let hash: [u8; 20] = hasher.finalize().try_into()?;
+            let mut hasher = Sha1::new();
+            hasher.update(&all_blocks);
+            let hash: [u8; 20] = hasher.finalize().try_into()?;
 
-            // assert_eq!(hash.encode_hex::<String>(), *piece_hash);
+            assert_eq!(hash.encode_hex::<String>(), *piece_hash);
 
-            // assert_eq!(all_blocks.len(), piece_length);
-            // println!(
-            //     "Piece {piece} downloaded to {}.",
-            //     output.as_path().display()
-            // );
+            assert_eq!(all_blocks.len(), piece_length);
+            println!(
+                "Piece {piece} downloaded to {}.",
+                output.as_path().display()
+            );
 
             f.write_all(&all_blocks).await?;
             let _ = f.flush();
@@ -387,3 +392,22 @@ async fn get_tracker(path: &PathBuf) -> anyhow::Result<TrackerResponse> {
 // left: `"bdd62e4f018128f2475f5286156ac3fb02b5f42e"`,
 // right: `"e876f67a2a8886e8f36b136726c30fa29703022d"`', src/main.rs:310:13
 // note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+// [your_program] 0 Request piece at offset: 0 with length: 16384. Total piece_length: 262144
+// [your_program] 1 Request piece at offset: 16384 with length: 16384. Total piece_length: 262144
+// [your_program] 2 Request piece at offset: 32768 with length: 16384. Total piece_length: 262144
+// [your_program] 3 Request piece at offset: 49152 with length: 16384. Total piece_length: 262144
+// [your_program] 4 Request piece at offset: 65536 with length: 16384. Total piece_length: 262144
+// [your_program] 5 Request piece at offset: 81920 with length: 16384. Total piece_length: 262144
+// [your_program] 6 Request piece at offset: 98304 with length: 16384. Total piece_length: 262144
+// [your_program] 7 Request piece at offset: 114688 with length: 16384. Total piece_length: 262144
+// [your_program] 8 Request piece at offset: 131072 with length: 16384. Total piece_length: 262144
+// [your_program] 9 Request piece at offset: 147456 with length: 16384. Total piece_length: 262144
+// [your_program] 10 Request piece at offset: 163840 with length: 16384. Total piece_length: 262144
+// [your_program] 11 Request piece at offset: 180224 with length: 16384. Total piece_length: 262144
+// [your_program] 12 Request piece at offset: 196608 with length: 16384. Total piece_length: 262144
+// [your_program] 13 Request piece at offset: 212992 with length: 16384. Total piece_length: 262144
+// [your_program] 14 Request piece at offset: 229376 with length: 16384. Total piece_length: 262144
+// [your_program] 15 Request piece at offset: 245760 with length: 16384. Total piece_length: 262144
+
+// 245760 + 16384
