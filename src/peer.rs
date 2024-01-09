@@ -5,8 +5,8 @@ pub struct HandshakeMessage {
 }
 
 // 1 + 19 + 8 + 20 + 20 => 68
-impl From<MetaInfo> for HandshakeMessage {
-    fn from(meta: meta::MetaInfo) -> HandshakeMessage {
+impl From<&MetaInfo> for HandshakeMessage {
+    fn from(meta: &meta::MetaInfo) -> HandshakeMessage {
         let mut bytes = Vec::with_capacity(68);
 
         let length: u8 = 19;

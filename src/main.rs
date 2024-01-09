@@ -21,7 +21,10 @@ use tokio::{
     net::TcpStream,
 };
 
+use download::Downloader;
 use tracker::{TrackerRequest, TrackerResponse};
+
+mod download;
 mod meta;
 mod peer;
 mod tracker;
@@ -118,6 +121,11 @@ enum SubCommands {
         path: PathBuf,
         piece: usize,
     },
+    Download {
+        #[arg(short)]
+        output: PathBuf,
+        path: PathBuf,
+    },
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
@@ -150,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
             meta.pieces_hash().iter().for_each(|v| println!("{v}"));
         }
         SubCommands::Peers { path } => {
-            let resp = get_tracker(path).await?;
+            let resp = download::get_tracker(path).await?;
             resp.peers()
                 .iter()
                 .for_each(|v| println!("{}:{}", v.0, v.1));
@@ -164,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
             // Connect to a peer
             let mut stream = TcpStream::connect(peer).await?;
 
-            let handshake = HandshakeMessage::from(meta);
+            let handshake = HandshakeMessage::from(&meta);
             // Write some data.
             let mut handshake_bytes: Vec<u8> = handshake.into_bytes();
             stream.write_all(&handshake_bytes[..]).await?;
@@ -190,258 +198,31 @@ async fn main() -> anyhow::Result<()> {
             let data = read(path).await.expect("torrent file exist");
             let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
 
-            eprintln!("<{:?}> \n {:?}", data, meta);
-            let piece_length = meta.info.piece_length as usize;
-            let file_length = meta.info.length;
+            let mut downloader = Downloader::new(meta, path).await?;
 
-            let pieces_hash = meta.pieces_hash();
+            downloader.handshake().await?;
 
-            eprintln!("piece len {}", pieces_hash.len());
-            let piece_hash = pieces_hash.get(*piece).expect("piece at indexs");
+            downloader.wait_bitfield().await?;
 
-            let npiece = (file_length as usize + (piece_length - 1)) / piece_length;
+            downloader.wait_unchoke().await?;
 
-            let piece_length = if *piece == npiece - 1 {
-                let md = file_length as usize % piece_length;
-                if md == 0 {
-                    piece_length
-                } else {
-                    md
-                }
-            } else {
-                piece_length
-            };
-
-            let trackers = get_tracker(path).await?;
-            let peers = trackers.peers();
-            let tracker = &peers.last().expect("at least one peer");
-
-            let peer = format!("{}:{}", tracker.0, tracker.1);
-            // Connect to a peer
-            let mut stream = TcpStream::connect(peer).await?;
-
-            let handshake = HandshakeMessage::from(meta);
-            // Write some data.
-            let mut handshake_bytes: Vec<u8> = handshake.into_bytes();
-            stream.write_all(&handshake_bytes[..]).await?;
-
-            eprintln!("Wait for hanshake reable");
-            // Wait for the socket to be readable
-            stream.readable().await?;
-
-            eprintln!("Wait for hanshake back");
-            // Try to read data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-
-            {
-                // let (stream, _) = stream.split();
-                // let mut stream = BufReader::new(stream);
-                let mut peer_id = vec![0; handshake_bytes.len()];
-                stream
-                    .read_exact(&mut peer_id)
-                    .await
-                    .expect("handshake message back");
-
-                // last 20 bytes
-
-                let mut v = [0; 5];
-
-                eprintln!("wait for bitfield peer {:?}", peer_id);
-
-                // stream.readable().await.expect("wait bitfield readable");
-
-                let _ = stream
-                    .read_exact(&mut v)
-                    .await
-                    .expect("read exact for bitfield");
-
-                let msg_type =
-                    peer::PeerMessage::form_bytes(&v[..5].try_into().expect("e")).msg_type;
-
-                match msg_type {
-                    peer::PeerMessageType::Bitfield { .. } => {}
-                    _ => {
-                        panic!("not epexted");
-                    }
-                };
-
-                let bitfield_len =
-                    u32::from_be_bytes(v[0..4].try_into().expect("first 4 bytes")) as usize;
-                eprintln!("received bitfield");
-
-                let mut rest = vec![0; bitfield_len - 1];
-
-                stream.readable().await?;
-                let _ = stream.read_exact(&mut rest).await?;
-                eprintln!("readed rest bitfield {}", rest.len());
-            }
-
-            let mut v = [0; 5];
-            let interest_byte =
-                peer::PeerMessage::new_message(peer::PeerMessageType::Interested).as_bytes();
-            stream.write_all(&interest_byte[..]).await?;
-
-            stream.readable().await?;
-            let _ = stream.read_exact(&mut v).await?;
-            let msg_type = peer::PeerMessage::form_bytes(&v).msg_type;
-            match msg_type {
-                peer::PeerMessageType::Unchoke { .. } => {}
-                _ => {
-                    panic!("not epexted");
-                }
-            };
-            eprintln!("received for unchoke");
-
-            const BLOCK_SIZE: usize = 1 << 14;
-
-            // const piece_size: usize = BLOCK_SIZE + 64 + 5;
-
-            let mut f = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .append(true)
-                .open(output)
-                .await?;
-
-            let mut curr_offset = 0;
-            let mut all_blocks: Vec<u8> = vec![0; piece_length];
-
-            let mut index = 0;
-
-            // let (stream, mut writer) = stream.split();
-            // let mut stream = BufReader::new(stream);
-            // let mut writer = BufWriter::new(writer);
-
-            let times = piece_length / BLOCK_SIZE;
-
-            // the + (BLOCK_MAX - 1) rounds up
-            let nblocks = (piece_length + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
-
-            for block in 0..nblocks {
-                let mut curr_block_len = BLOCK_SIZE;
-                if curr_offset + BLOCK_SIZE >= piece_length {
-                    curr_block_len = piece_length - curr_offset;
-                }
-
-                let block_size = if block == nblocks - 1 {
-                    let md = piece_length % BLOCK_SIZE;
-                    if md == 0 {
-                        BLOCK_SIZE
-                    } else {
-                        md
-                    }
-                } else {
-                    BLOCK_SIZE
-                };
-
-                let request_msg = peer::PeerMessage::new_request(
-                    *piece as u32,
-                    (block * BLOCK_SIZE) as u32,
-                    block_size as u32,
-                )
-                .as_bytes();
-                stream.write_all(&request_msg[..]).await?;
-
-                eprintln!(
-                    "{index} Request piece at offset: {curr_offset} with length: {curr_block_len}. Total piece_length: {piece_length}"
-                );
-                index += 1;
-                curr_offset += curr_block_len;
-
-                let mut block_received = 0;
-                let mut piece_msg_data = [0; 5];
-
-                stream.readable().await?;
-                let _ = stream
-                    .read_exact(&mut piece_msg_data)
-                    .await
-                    .context("Read piece message")?;
-
-                let msg_type =
-                    peer::PeerMessage::form_bytes(&piece_msg_data.try_into().expect("5 byes"))
-                        .msg_type;
-
-                match msg_type {
-                    peer::PeerMessageType::Piece { .. } => {
-                        let length =
-                            i32::from_be_bytes(piece_msg_data[..4].try_into().expect("4 bytes"));
-
-                        // Read the payload
-                        let mut piece_payload: Vec<u8> = vec![0; length as usize - 1];
-
-                        let _ = stream
-                            .read_exact(&mut piece_payload)
-                            .await
-                            .context("read exact piece payload")?;
-
-                        let (index_byte, piece_payload) = piece_payload.split_at(4);
-
-                        eprintln!(
-                            "Index {}",
-                            u32::from_be_bytes(index_byte.try_into().expect("4 bytes u32 index"))
-                        );
-
-                        let (begin, piece_payload) = piece_payload.split_at(4);
-
-                        let begin = u32::from_be_bytes(begin.try_into().expect("4 bytes u32 begin"))
-                            as usize;
-                        eprintln!("begin {}", begin);
-
-                        // let piece_payload = &piece_payload[..curr_block_len];
-
-                        let blocks = all_blocks[begin..begin + length as usize - 1 - 8].as_mut();
-                        blocks.copy_from_slice(piece_payload);
-
-                        block_received += blocks.len();
-                        // break;
-
-                        if block_received >= piece_length {
-                            break;
-                        }
-                    }
-                    _ => {
-                        eprintln!("Got unexpected {:?} {:?}", v, msg_type);
-                        sleep(Duration::from_secs(2)).await;
-                    }
-                };
-            }
-            // break;
-            let mut hasher = Sha1::new();
-            hasher.update(&all_blocks);
-            let hash: [u8; 20] = hasher.finalize().try_into()?;
-
-            assert_eq!(hash.encode_hex::<String>(), *piece_hash);
-
-            assert_eq!(all_blocks.len(), piece_length);
-            println!(
-                "Piece {piece} downloaded to {}.",
-                output.as_path().display()
-            );
-
-            f.write_all(&all_blocks).await?;
-            let _ = f.flush();
+            downloader.download_piece(output, piece).await?;
         }
-        _ => {
-            println!("unknown command: {}", args[1])
+        SubCommands::Download { output, path } => {
+            let data = read(path).await.expect("torrent file exist");
+            let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
+
+            let mut downloader = Downloader::new(meta, path).await?;
+
+            downloader.handshake().await?;
+
+            downloader.wait_bitfield().await?;
+
+            downloader.wait_unchoke().await?;
+
+            downloader.download_file(output).await?;
         }
     }
 
     Ok(())
-}
-
-async fn get_tracker(path: &PathBuf) -> anyhow::Result<TrackerResponse> {
-    let data = std::fs::read(path).expect("torrent file exist");
-
-    let meta: meta::MetaInfo = serde_bencode::from_bytes(&data).expect("Meta");
-
-    let mut url = reqwest::Url::parse(&meta.announce).expect("announce URL ");
-
-    let encode_query = TrackerRequest::from(meta).query();
-    url.set_query(Some(&encode_query));
-    let b = reqwest::get(url).await?.bytes().await?;
-
-    let resp: TrackerResponse = serde_bencode::from_bytes(&b).expect("Tracker response");
-
-    Ok(resp)
 }
