@@ -9,10 +9,10 @@ pub struct MetaInfo {
 /*  */
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct Info {
-    pub length: i64,
+    pub length: i32,
     pub name: String,
     #[serde(rename = "piece length")]
-    pub piece_length: usize,
+    pub piece_length: i32,
     /// Each entry of `pieces` is the SHA1 hash of the piece at the corresponding index.
     pub pieces: serde_bencode::value::Value,
 }

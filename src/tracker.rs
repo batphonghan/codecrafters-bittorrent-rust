@@ -21,15 +21,15 @@ pub struct TrackerRequest {
 
     /// uploaded: the total amount uploaded so far
     /// Since your client hasn't uploaded anything yet, you can set this to 0.
-    uploaded: i64,
+    uploaded: i32,
 
     // downloaded: the total amount downloaded so far
     // Since your client hasn't downloaded anything yet, you can set this to 0.
-    downloaded: i64,
+    downloaded: i32,
 
     // left: the number of bytes left to download
     // Since you client hasn't downloaded anything yet, this'll be the total length of the file (you've extracted this value from the torrent file in previous stages)
-    left: i64,
+    left: i32,
 
     // compact: whether the peer list should use the compact representation
     // For the purposes of this challenge, set this to 1.
